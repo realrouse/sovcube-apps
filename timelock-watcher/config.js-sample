@@ -1,0 +1,12 @@
+// config.js
+module.exports = {
+    host: "localhost",
+    user: "DATABASE USER",
+    password: "DATABASE USER PASSWORD",
+    database: "DATABASE NAME",
+
+infuraUrl: "wss://mainnet.infura.io/ws/v3/YOUR_INFURA_ID",
+
+// Define your contract's deployed address
+tokenContractAddress:'ADDRESS OF TIMELOCK CONTRACT'
+};
