@@ -1,12 +1,18 @@
 // config.js
 module.exports = {
     host: "localhost",
-    user: "DATABASE USER",
+    user: "DATABASE USER NAME",
     password: "DATABASE USER PASSWORD",
     database: "DATABASE NAME",
 
-infuraUrl: "wss://mainnet.infura.io/ws/v3/YOUR_INFURA_ID",
+infuraUrl: "wss://goerli.infura.io/ws/v3/YOUR_INFURA_ID",
 
-// Define your contract's deployed address
-tokenContractAddress:'ADDRESS OF TIMELOCK CONTRACT'
+timelockContract1Address:'0x729c1ED996e852698D88129da0780749a9E6F707',
+timelockContract1CreationBlock:'10393831',
+timelockContract2Address:'0xa02AF0DdF188A5dC3495Da2eFDBD614Ae7A21018',
+timelockContract2CreationBlock:'10393831',
+timelockRewardReserveContractAddress:'0x782412935A7A4AfD222FB3693cb0eF0a3255FA78',
+timelockRewardReserveCreationBlock:'10393831',
+tokenContractAddress:'0x240E059d1B46159d74f103ab7dC63c0478DEE8Dc',
+tokenContractCreationBlock:'10393831'
 };
