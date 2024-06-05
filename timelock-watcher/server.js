@@ -48,7 +48,6 @@ function createTables() {
       if (err) {
         console.error(`Error creating table for ${contract.tableName}:`, err);
       } else {
-	      
         console.log(`Table for ${contract.tableName} created or already exists.`);
       }
     });
@@ -57,37 +56,35 @@ function createTables() {
 
 createTables();
 
-
 function clearTable() {
-for (const contract of contractTableMapping) {
-const truncateTableQuery = `TRUNCATE TABLE ${contract.tableName};`;
-  connection.query(truncateTableQuery, (err) => {
-    if (err) throw err;
-    console.log('Table data cleared.');
-  });
-}
+  for (const contract of contractTableMapping) {
+    const truncateTableQuery = `TRUNCATE TABLE ${contract.tableName};`;
+    connection.query(truncateTableQuery, (err) => {
+      if (err) throw err;
+      console.log(`Table data cleared for ${contract.tableName}.`);
+    });
+  }
 }
 
 clearTable();
-
 
 // Import the Web3 module using destructuring
 const { Web3 } = require('web3');
 const fs = require('fs');
 
 function createWebSocketProvider(url) {
-    let provider = new Web3.providers.WebsocketProvider(url);
+  let provider = new Web3.providers.WebsocketProvider(url);
 
-    provider.on('connect', () => console.log('WS Connected'));
-    provider.on('end', (e) => {
-        console.log('WS Disconnected', e);
-        setTimeout(() => {
-            provider = createWebSocketProvider(url); // Attempt to reconnect
-            web3.setProvider(provider);
-        }, 5000); // Reconnect after 5 seconds
-    });
+  provider.on('connect', () => console.log('WS Connected'));
+  provider.on('end', (e) => {
+    console.log('WS Disconnected', e);
+    setTimeout(() => {
+      provider = createWebSocketProvider(url); // Attempt to reconnect
+      web3.setProvider(provider);
+    }, 5000); // Reconnect after 5 seconds
+  });
 
-    return provider;
+  return provider;
 }
 
 const wsProvider = new Web3.providers.WebsocketProvider(config.infuraUrl);
@@ -102,19 +99,20 @@ async function pollEvents() {
       const contractABI = JSON.parse(fs.readFileSync(contractConfig.abiPath, 'utf-8'));
       const contract = new web3.eth.Contract(contractABI, contractConfig.address);
 
-      if (contractConfig.tableName === 'timelock_contract_1' || contractConfig.tableName === 'timelock_contract_2') {
-        const frozenEvents = await contract.getPastEvents('TokensFrozen', {
-          fromBlock: contractConfig.creationBlock, // Adjust as needed
-          toBlock: latest,
-        });
+      let eventTypes = [];
+      if (contractConfig.tableName === 'timelock_contract_1') {
+        eventTypes = ['TokensFrozen', 'TokensUnfrozen'];
+      } else if (contractConfig.tableName === 'timelock_contract_2') {
+        eventTypes = ['TokenTimelock', 'TokenWithdrawal'];
+      }
 
-        const unfrozenEvents = await contract.getPastEvents('TokensUnfrozen', {
-          fromBlock: contractConfig.creationBlock, // Adjust as needed
+      for (const eventType of eventTypes) {
+        const events = await contract.getPastEvents(eventType, {
+          fromBlock: contractConfig.creationBlock,
           toBlock: latest,
         });
-frozenEvents.forEach(event => handleEvent('TokensFrozen', event, contractConfig.tableName, latest, contract));
-unfrozenEvents.forEach(event => handleEvent('TokensUnfrozen', event, contractConfig.tableName, latest, contract));
-}
+        events.forEach(event => handleEvent(eventType, event, contractConfig.tableName, latest, contract));
+      }
 
       // Update the total row after processing events for each contract
       updateTotalRow(contractConfig.tableName, latest, contract);
@@ -124,41 +122,17 @@ unfrozenEvents.forEach(event => handleEvent('TokensUnfrozen', event, contractCon
   }
 }
 
-/*
 function handleEvent(eventType, event, tableName, blockNumber, contract) {
   const { addr, amt } = event.returnValues;
-  const amtInBSOV = BigInt(amt) / BigInt(100000000); // Convert amt to BSOV
-  let sql;
-
-  if (eventType === 'TokensFrozen') {
-    sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber) 
-           VALUES ('${addr}', ${amtInBSOV}, 0, ${blockNumber}) 
-           ON DUPLICATE KEY UPDATE totalFrozen = totalFrozen + ${amtInBSOV}`;
-  } else if (eventType === 'TokensUnfrozen') {
-    sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber) 
-           VALUES ('${addr}', 0, ${amtInBSOV}, ${blockNumber}) 
-           ON DUPLICATE KEY UPDATE totalUnfrozen = totalUnfrozen + ${amtInBSOV}`;
-  }
-
-  connection.query(sql, (err) => {
-    if (err) throw err;
-    console.log(`${eventType} event processed for contract ${tableName}, address: ${addr}`);
-  });
-}
-*/
-
-function handleEvent(eventType, event, tableName, blockNumber, contract) {
-  const { addr, amt } = event.returnValues;
-  // Convert amt to BSOV, rounding to the nearest whole number to avoid decimals
   const amtInBSOV = Math.round(Number(amt) / 1e8);
 
   let sql;
 
-  if (eventType === 'TokensFrozen') {
+  if (eventType === 'TokensFrozen' || eventType === 'TokenTimelock') {
     sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
            VALUES ('${addr}', ${amtInBSOV}, 0, ${blockNumber})
            ON DUPLICATE KEY UPDATE totalFrozen = totalFrozen + ${amtInBSOV}`;
-  } else if (eventType === 'TokensUnfrozen') {
+  } else if (eventType === 'TokensUnfrozen' || eventType === 'TokenWithdrawal') {
     sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
            VALUES ('${addr}', 0, ${amtInBSOV}, ${blockNumber})
            ON DUPLICATE KEY UPDATE totalUnfrozen = totalUnfrozen + ${amtInBSOV}`;
@@ -169,8 +143,6 @@ function handleEvent(eventType, event, tableName, blockNumber, contract) {
     console.log(`${eventType} event processed for contract ${tableName}, address: ${addr}`);
   });
 }
-
-
 
 function updateTotalRow(tableName, blockNumber, contract) {
   const totalSql = `
