@@ -1,0 +1,192 @@
+const mysql = require('mysql');
+const config = require('./config.js');
+
+const connection = mysql.createConnection(config);
+
+const contractTableMapping = [
+  {
+    address: config.timelockContract1Address,
+    tableName: 'timelock_contract_1',
+    abiPath: './contract1.abi',
+    creationBlock: config.timelockContract1CreationBlock,
+  },
+  {
+    address: config.timelockContract2Address,
+    tableName: 'timelock_contract_2',
+    tableName: 'timelock_contract_2',
+    abiPath: './contract2.abi',
+    creationBlock: config.timelockContract2CreationBlock,
+  },
+  {
+    address: config.timelockRewardReserveContractAddress,
+    tableName: 'timelock_reward_reserve_contract',
+    abiPath: './timelockrewardsreserve.abi',
+    creationBlock: config.timelockRewardReserveCreationBlock,
+  },
+  {
+    address: config.tokenContractAddress,
+    tableName: 'token_contract',
+    abiPath: './tokencontract.abi',
+    creationBlock: config.tokenContractCreationBlock,
+  },
+  // Add more contract addresses and table names as needed
+];
+
+function createTables() {
+  for (const contract of contractTableMapping) {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS ${contract.tableName} (
+        address VARCHAR(42) PRIMARY KEY,
+        totalFrozen BIGINT UNSIGNED,
+        totalUnfrozen BIGINT UNSIGNED,
+        netAmount BIGINT UNSIGNED,
+        blockNumber INT UNSIGNED,
+        isTotal BOOLEAN NOT NULL DEFAULT FALSE
+      );
+    `;
+
+    connection.query(createTableQuery, (err) => {
+      if (err) {
+        console.error(`Error creating table for ${contract.tableName}:`, err);
+      } else {
+        console.log(`Table for ${contract.tableName} created or already exists.`);
+      }
+    });
+  }
+}
+
+createTables();
+
+function clearTable() {
+  for (const contract of contractTableMapping) {
+    const truncateTableQuery = `TRUNCATE TABLE ${contract.tableName};`;
+    connection.query(truncateTableQuery, (err) => {
+      if (err) throw err;
+      console.log(`Table data cleared for ${contract.tableName}.`);
+    });
+  }
+}
+
+clearTable();
+
+// Import the Web3 module using destructuring
+const { Web3 } = require('web3');
+const fs = require('fs');
+
+// Sleep function to delay execution
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createWebSocketProvider(url) {
+  let provider = new Web3.providers.WebsocketProvider(url);
+
+  provider.on('connect', () => console.log('WS Connected'));
+  provider.on('end', (e) => {
+    console.log('WS Disconnected', e);
+    setTimeout(() => {
+      provider = createWebSocketProvider(url); // Attempt to reconnect
+      web3.setProvider(provider);
+    }, 5000); // Reconnect after 5 seconds
+  });
+
+  return provider;
+}
+
+const wsProvider = new Web3.providers.WebsocketProvider(config.infuraUrl);
+const web3 = new Web3(wsProvider);
+
+async function pollEvents() {
+  clearTable();
+
+  for (const contractConfig of contractTableMapping) {
+    try {
+      // Sleep before requesting the latest block number
+      await sleep(1000);
+      const latest = await web3.eth.getBlockNumber();
+      await sleep(1000); // Sleep after getting the block number to avoid rate limiting
+
+      const contractABI = JSON.parse(fs.readFileSync(contractConfig.abiPath, 'utf-8'));
+      const contract = new web3.eth.Contract(contractABI, contractConfig.address);
+
+      let eventTypes = [];
+      if (contractConfig.tableName === 'timelock_contract_1') {
+        eventTypes = ['TokensFrozen', 'TokensUnfrozen'];
+      } else if (contractConfig.tableName === 'timelock_contract_2') {
+        eventTypes = ['TokenTimelock', 'TokenWithdrawalRegularAccount'];
+      }
+
+      for (const eventType of eventTypes) {
+        const events = await contract.getPastEvents(eventType, {
+          fromBlock: contractConfig.creationBlock,
+          toBlock: latest,
+        });
+        events.forEach(event => handleEvent(eventType, event, contractConfig.tableName, latest, contract));
+        
+        // Add a delay of 30ms between each event type processing
+        await sleep(100);
+      }
+
+      // Update the total row after processing events for each contract
+      updateTotalRow(contractConfig.tableName, latest, contract);
+    } catch (error) {
+      console.error('Error polling events for contract:', contractConfig.address, error);
+    }
+  }
+}
+
+function handleEvent(eventType, event, tableName, blockNumber, contract) {
+  const { addr, amt } = event.returnValues;
+  const amtInBSOV = Math.round(Number(amt) / 1e8);
+
+  let sql;
+
+  if (eventType === 'TokensFrozen' || eventType === 'TokenTimelock') {
+    sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
+           VALUES ('${addr}', ${amtInBSOV}, 0, ${blockNumber})
+           ON DUPLICATE KEY UPDATE totalFrozen = totalFrozen + ${amtInBSOV}`;
+  } else if (eventType === 'TokensUnfrozen' || eventType === 'TokenWithdrawalRegularAccount') {
+    sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
+           VALUES ('${addr}', 0, ${amtInBSOV}, ${blockNumber})
+           ON DUPLICATE KEY UPDATE totalUnfrozen = totalUnfrozen + ${amtInBSOV}`;
+  }
+
+  connection.query(sql, (err) => {
+    if (err) throw err;
+    console.log(`${eventType} event processed for contract ${tableName}, address: ${addr}`);
+  });
+}
+
+function updateTotalRow(tableName, blockNumber, contract) {
+  const totalSql = `
+      INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, netAmount, blockNumber, isTotal)
+      SELECT 'TOTAL', SUM(totalFrozen), SUM(totalUnfrozen), SUM(totalFrozen) - SUM(totalUnfrozen), ${blockNumber}, TRUE FROM ${tableName}
+      ON DUPLICATE KEY UPDATE 
+          totalFrozen = VALUES(totalFrozen),
+          totalUnfrozen = VALUES(totalUnfrozen),
+          netAmount = VALUES(netAmount),
+          blockNumber = VALUES(blockNumber);
+  `;
+
+  const individualSql = `
+      UPDATE ${tableName} 
+      SET netAmount = totalFrozen - totalUnfrozen
+      WHERE address != 'TOTAL';
+  `;
+
+  connection.query(totalSql, (err) => {
+    if (err) throw err;
+    console.log(`Total row updated for contract ${tableName}.`);
+
+    // After updating the "TOTAL" row, update the netAmount for individual rows
+    connection.query(individualSql, (err) => {
+      if (err) throw err;
+      console.log(`NetAmount updated for individual rows of contract ${tableName}.`);
+    });
+  });
+}
+
+pollEvents();
+// Poll every 60 seconds (adjust as needed)
+setInterval(pollEvents, 60000);
+

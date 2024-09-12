@@ -1,0 +1,191 @@
+const mysql = require('mysql');
+const fs = require('fs');
+
+// Sleep function to delay execution
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createStatsTables(connection) {
+    const tables = [
+        {
+            name: 'stats_contract1',
+            fields: `
+                getBalance BIGINT,
+                getLastWithdrawal BIGINT,
+                getTimeLeft BIGINT
+            `
+        },
+        {
+            name: 'stats_contract2',
+            fields: `
+                currentGlobalTier INT,
+                deploymentTimestamp BIGINT,
+                getBalanceRegularAccount BIGINT,
+                getGlobalTimeLeftRegularAccount BIGINT,
+                getTimestampOfNextWithdrawalHalving BIGINT,
+                globalLockExpirationDateRegularAccount BIGINT,
+                isContractSeeded BOOLEAN,
+                lastWithdrawalHalving BIGINT,
+                owner VARCHAR(42),
+                periodWithdrawalAmount BIGINT,
+                totalCumulativeTimelocked BIGINT,
+                totalCurrentlyTimelocked BIGINT,
+                totalRewardsEarned BIGINT,
+                totalRewardsSeeded BIGINT,
+                withdrawalHalvingEra INT
+            `
+        },
+        {
+            name: 'stats_token',
+            fields: `
+                burnPercent INT,
+                name VARCHAR(255),
+                totalSupply BIGINT,
+                decimals INT,
+                _totalSupply BIGINT,
+                maxSupplyForEra BIGINT,
+                tokensMinted BIGINT,
+                balanceOfBurntTokens BIGINT,
+                owner VARCHAR(42),
+                symbol VARCHAR(10),
+                newOwner VARCHAR(42)
+            `
+        }
+    ];
+
+    tables.forEach(table => {
+        const createTableQuery = `
+            CREATE TABLE IF NOT EXISTS ${table.name} (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ${table.fields}
+            );
+        `;
+
+        connection.query(createTableQuery, (err) => {
+            if (err) {
+                console.error(`Error creating table ${table.name}:`, err);
+            } else {
+                console.log(`Table ${table.name} created or already exists.`);
+            }
+        });
+    });
+}
+
+async function fetchStatsContract1(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./contract1.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.timelockContract1Address);
+
+    await sleep(50);
+    const getTimeLeft = await contract.methods.getTimeLeft().call();
+    await sleep(50);
+
+    const sql = `
+        INSERT INTO stats_contract1 (getBalance, getLastWithdrawal, getTimeLeft)
+        VALUES (${getBalance}, ${getLastWithdrawal}, ${getTimeLeft});
+    `;
+
+    connection.query(sql, (err) => {
+        if (err) {
+            console.error('Error inserting stats for contract1:', err);
+        } else {
+            console.log('Stats for contract1 inserted successfully.');
+        }
+    });
+}
+
+async function fetchStatsContract2(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./contract2.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.timelockContract2Address);
+
+    const stats = {
+        currentGlobalTier: await contract.methods.currentGlobalTier().call(),
+        deploymentTimestamp: await contract.methods.deploymentTimestamp().call(),
+        getBalanceRegularAccount: await contract.methods.getBalanceRegularAccount(config.timelockContract2Address).call(),
+        getGlobalTimeLeftRegularAccount: await contract.methods.getGlobalTimeLeftRegularAccount().call(),
+        getTimestampOfNextWithdrawalHalving: await contract.methods.getTimestampOfNextWithdrawalHalving().call(),
+        globalLockExpirationDateRegularAccount: await contract.methods.globalLockExpirationDateRegularAccount().call(),
+        isContractSeeded: await contract.methods.isContractSeeded().call(),
+        lastWithdrawalHalving: await contract.methods.lastWithdrawalHalving().call(),
+        owner: await contract.methods.owner().call(),
+        periodWithdrawalAmount: await contract.methods.periodWithdrawalAmount().call(),
+        totalCumulativeTimelocked: await contract.methods.totalCumulativeTimelocked().call(),
+        totalCurrentlyTimelocked: await contract.methods.totalCurrentlyTimelocked().call(),
+        totalRewardsEarned: await contract.methods.totalRewardsEarned().call(),
+        totalRewardsSeeded: await contract.methods.totalRewardsSeeded().call(),
+        withdrawalHalvingEra: await contract.methods.withdrawalHalvingEra().call()
+    };
+
+    for (let key of Object.keys(stats)) {
+        await sleep(50);
+    }
+
+    const sql = `
+        INSERT INTO stats_contract2 (${Object.keys(stats).join(', ')})
+        VALUES (${Object.values(stats).map(value => `'${value}'`).join(', ')});
+    `;
+
+    connection.query(sql, (err) => {
+        if (err) {
+            console.error('Error inserting stats for contract2:', err);
+        } else {
+            console.log('Stats for contract2 inserted successfully.');
+        }
+    });
+}
+
+async function fetchStatsToken(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./tokencontract.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.tokenContractAddress);
+
+    const burnAddress = '0x0000000000000000000000000000000000000000'; // Burn address
+    const stats = {
+        burnPercent: await contract.methods.burnPercent().call(),
+        name: await contract.methods.name().call(),
+        totalSupply: await contract.methods.totalSupply().call(),
+        decimals: await contract.methods.decimals().call(),
+        _totalSupply: await contract.methods._totalSupply().call(),
+        maxSupplyForEra: await contract.methods.maxSupplyForEra().call(),
+        tokensMinted: await contract.methods.tokensMinted().call(),
+        balanceOfBurntTokens: await contract.methods.balanceOf(burnAddress).call(),
+        owner: await contract.methods.owner().call(),
+        symbol: await contract.methods.symbol().call(),
+        newOwner: await contract.methods.newOwner().call()
+    };
+
+    for (let key of Object.keys(stats)) {
+        await sleep(50);
+    }
+
+    const sql = `
+        INSERT INTO stats_token (${Object.keys(stats).join(', ')})
+        VALUES (${Object.values(stats).map(value => `'${value}'`).join(', ')});
+    `;
+
+    connection.query(sql, (err) => {
+        if (err) {
+            console.error('Error inserting stats for token:', err);
+        } else {
+            console.log('Stats for token inserted successfully.');
+        }
+    });
+}
+
+
+async function fetchAndStoreStats(connection, web3, config) {
+    try {
+        console.log('fetchAndStoreStats called with:', { connection, web3, config });
+        await fetchStatsContract1(connection, web3, config);
+        await fetchStatsContract2(connection, web3, config);
+        await fetchStatsToken(connection, web3, config);
+    } catch (error) {
+        console.error('Error in fetchAndStoreStats:', error);
+    }
+}
+
+
+module.exports = {
+    createStatsTables,
+    fetchAndStoreStats
+};
+

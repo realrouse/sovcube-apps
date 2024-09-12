@@ -1,6 +1,8 @@
 const mysql = require('mysql');
 const config = require('./config.js');
 
+const { clearStatsTables, createStatsTables, fetchAndStoreStats } = require('./stats.js');
+
 const connection = mysql.createConnection(config);
 
 const contractTableMapping = [
@@ -33,16 +35,15 @@ const contractTableMapping = [
 
 function createTables() {
   for (const contract of contractTableMapping) {
-    const createTableQuery = `
-      CREATE TABLE IF NOT EXISTS ${contract.tableName} (
+    const createTableQuery = 
+      `CREATE TABLE IF NOT EXISTS ${contract.tableName} (
         address VARCHAR(42) PRIMARY KEY,
         totalFrozen BIGINT UNSIGNED,
         totalUnfrozen BIGINT UNSIGNED,
         netAmount BIGINT UNSIGNED,
         blockNumber INT UNSIGNED,
         isTotal BOOLEAN NOT NULL DEFAULT FALSE
-      );
-    `;
+      );`;
 
     connection.query(createTableQuery, (err) => {
       if (err) {
@@ -55,6 +56,8 @@ function createTables() {
 }
 
 createTables();
+createStatsTables(connection);
+
 
 function clearTable() {
   for (const contract of contractTableMapping) {
@@ -68,9 +71,16 @@ function clearTable() {
 
 clearTable();
 
+clearStatsTables(connection);
+
 // Import the Web3 module using destructuring
 const { Web3 } = require('web3');
 const fs = require('fs');
+
+// Sleep function to delay execution
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function createWebSocketProvider(url) {
   let provider = new Web3.providers.WebsocketProvider(url);
@@ -95,7 +105,11 @@ async function pollEvents() {
 
   for (const contractConfig of contractTableMapping) {
     try {
+      // Sleep before requesting the latest block number
+      await sleep(1000);
       const latest = await web3.eth.getBlockNumber();
+      await sleep(1000); // Sleep after getting the block number to avoid rate limiting
+
       const contractABI = JSON.parse(fs.readFileSync(contractConfig.abiPath, 'utf-8'));
       const contract = new web3.eth.Contract(contractABI, contractConfig.address);
 
@@ -103,7 +117,7 @@ async function pollEvents() {
       if (contractConfig.tableName === 'timelock_contract_1') {
         eventTypes = ['TokensFrozen', 'TokensUnfrozen'];
       } else if (contractConfig.tableName === 'timelock_contract_2') {
-        eventTypes = ['TokenTimelock', 'TokenWithdrawal'];
+        eventTypes = ['TokenTimelock', 'TokenWithdrawalRegularAccount'];
       }
 
       for (const eventType of eventTypes) {
@@ -112,6 +126,9 @@ async function pollEvents() {
           toBlock: latest,
         });
         events.forEach(event => handleEvent(eventType, event, contractConfig.tableName, latest, contract));
+        
+        // Add a delay of 30ms between each event type processing
+        await sleep(100);
       }
 
       // Update the total row after processing events for each contract
@@ -131,11 +148,11 @@ function handleEvent(eventType, event, tableName, blockNumber, contract) {
   if (eventType === 'TokensFrozen' || eventType === 'TokenTimelock') {
     sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
            VALUES ('${addr}', ${amtInBSOV}, 0, ${blockNumber})
-           ON DUPLICATE KEY UPDATE totalFrozen = totalFrozen + ${amtInBSOV}`;
-  } else if (eventType === 'TokensUnfrozen' || eventType === 'TokenWithdrawal') {
+           ON DUPLICATE KEY UPDATE totalFrozen = totalFrozen + ${amtInBSOV};`;
+  } else if (eventType === 'TokensUnfrozen' || eventType === 'TokenWithdrawalRegularAccount') {
     sql = `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, blockNumber)
            VALUES ('${addr}', 0, ${amtInBSOV}, ${blockNumber})
-           ON DUPLICATE KEY UPDATE totalUnfrozen = totalUnfrozen + ${amtInBSOV}`;
+           ON DUPLICATE KEY UPDATE totalUnfrozen = totalUnfrozen + ${amtInBSOV};`;
   }
 
   connection.query(sql, (err) => {
@@ -145,21 +162,19 @@ function handleEvent(eventType, event, tableName, blockNumber, contract) {
 }
 
 function updateTotalRow(tableName, blockNumber, contract) {
-  const totalSql = `
-      INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, netAmount, blockNumber, isTotal)
+  const totalSql = 
+      `INSERT INTO ${tableName} (address, totalFrozen, totalUnfrozen, netAmount, blockNumber, isTotal)
       SELECT 'TOTAL', SUM(totalFrozen), SUM(totalUnfrozen), SUM(totalFrozen) - SUM(totalUnfrozen), ${blockNumber}, TRUE FROM ${tableName}
       ON DUPLICATE KEY UPDATE 
           totalFrozen = VALUES(totalFrozen),
           totalUnfrozen = VALUES(totalUnfrozen),
           netAmount = VALUES(netAmount),
-          blockNumber = VALUES(blockNumber);
-  `;
+          blockNumber = VALUES(blockNumber);`;
 
-  const individualSql = `
-      UPDATE ${tableName} 
+  const individualSql = 
+      `UPDATE ${tableName} 
       SET netAmount = totalFrozen - totalUnfrozen
-      WHERE address != 'TOTAL';
-  `;
+      WHERE address != 'TOTAL';`;
 
   connection.query(totalSql, (err) => {
     if (err) throw err;
@@ -174,6 +189,7 @@ function updateTotalRow(tableName, blockNumber, contract) {
 }
 
 pollEvents();
+fetchAndStoreStats(connection, web3, config);
 // Poll every 60 seconds (adjust as needed)
 setInterval(pollEvents, 60000);
-
+setInterval(() => fetchAndStoreStats(connection, web3, config), 60000);

@@ -1,0 +1,316 @@
+const mysql = require('mysql');
+const fs = require('fs');
+
+// Sleep function to delay execution
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createStatsTables(connection) {
+    const tables = [
+        {
+            name: 'stats_contract1',
+            fields: `
+                id INT PRIMARY KEY,
+                getTimeLeft BIGINT
+            `
+        },
+        {
+            name: 'stats_contract2',
+            fields: `
+                id INT PRIMARY KEY,
+                currentGlobalTier INT,
+                deploymentTimestamp BIGINT,
+                getGlobalTimeLeftRegularAccount BIGINT,
+                getTimestampOfNextWithdrawalHalving BIGINT,
+                globalLockExpirationDateRegularAccount BIGINT,
+                isContractSeeded TINYINT,
+                lastWithdrawalHalving BIGINT,
+                owner VARCHAR(42),
+                periodWithdrawalAmount BIGINT,
+                totalCumulativeTimelocked BIGINT,
+                totalCurrentlyTimelocked BIGINT,
+                totalRewardsEarned BIGINT,
+                totalRewardsSeeded BIGINT,
+                withdrawalHalvingEra INT
+            `
+        },
+        {
+            name: 'stats_token',
+            fields: `
+                id INT PRIMARY KEY,
+                burnPercent INT,
+                name VARCHAR(255),
+                totalSupply BIGINT,
+                decimals INT,
+                _totalSupply BIGINT,
+                maxSupplyForEra BIGINT,
+                tokensMinted BIGINT,
+                balanceOfBurntTokens BIGINT,
+                owner VARCHAR(42),
+                symbol VARCHAR(10),
+                newOwner VARCHAR(42)
+            `
+        }
+    ];
+
+    tables.forEach(table => {
+        const createTableQuery = `
+            CREATE TABLE IF NOT EXISTS ${table.name} (
+                ${table.fields}
+            );
+        `;
+
+        connection.query(createTableQuery, (err) => {
+            if (err) {
+                console.error(`Error creating table ${table.name}:`, err);
+            } else {
+                console.log(`Table ${table.name} created or already exists.`);
+            }
+        });
+    });
+}
+
+function clearStatsTables(connection) {
+    const tables = ['stats_contract1', 'stats_contract2', 'stats_token'];
+
+    tables.forEach(tableName => {
+        const truncateTableQuery = `TRUNCATE TABLE ${tableName};`;
+        connection.query(truncateTableQuery, (err) => {
+            if (err) throw err;
+            console.log(`Table data cleared for ${tableName}.`);
+        });
+    });
+}
+
+async function fetchStatsContract1(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./contract1.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.timelockContract1Address);
+
+    await sleep(50);
+
+    let getTimeLeft;
+    try {
+        getTimeLeft = await contract.methods.getTimeLeft().call();
+    } catch (error) {
+        if (error.message.includes("The future is here!")) {
+            getTimeLeft = 0; // Set value to 0 silently
+        } else {
+            console.error('Unexpected error in fetchStatsContract1:', error);
+            getTimeLeft = 0; // Set a default value in case of other errors
+        }
+    }
+    await sleep(50);
+
+    const sql = `
+        REPLACE INTO stats_contract1 (id, getTimeLeft)
+        VALUES (1, ${getTimeLeft});
+    `;
+
+    connection.query(sql, (err) => {
+        if (err) {
+            console.error('Error inserting stats for contract1:', err);
+        } else {
+            console.log('Stats for contract1 inserted successfully.');
+        }
+    });
+}
+
+async function fetchStatsContract2(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./contract2.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.timelockContract2Address);
+
+    const stats = { id: 1 }; // Add an id field to ensure only one row exists
+
+    try {
+        stats.currentGlobalTier = await contract.methods.currentGlobalTier().call();
+    } catch (error) {
+        console.error('Error fetching currentGlobalTier:', error);
+        stats.currentGlobalTier = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.deploymentTimestamp = await contract.methods.deploymentTimestamp().call();
+    } catch (error) {
+        console.error('Error fetching deploymentTimestamp:', error);
+        stats.deploymentTimestamp = 0;
+    }
+    await sleep(50);
+
+    stats.getGlobalTimeLeftRegularAccount = await safeContractCall(
+        contract.methods.getGlobalTimeLeftRegularAccount,
+        'getGlobalTimeLeftRegularAccount'
+    );
+    await sleep(50);
+
+    stats.getTimestampOfNextWithdrawalHalving = await safeContractCall(
+        contract.methods.getTimestampOfNextWithdrawalHalving,
+        'getTimestampOfNextWithdrawalHalving'
+    );
+    await sleep(50);
+
+    try {
+        stats.globalLockExpirationDateRegularAccount = await contract.methods.globalLockExpirationDateRegularAccount().call();
+    } catch (error) {
+        console.error('Error fetching globalLockExpirationDateRegularAccount:', error);
+        stats.globalLockExpirationDateRegularAccount = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.isContractSeeded = await contract.methods.isContractSeeded().call() ? 1 : 0;
+    } catch (error) {
+        console.error('Error fetching isContractSeeded:', error);
+        stats.isContractSeeded = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.lastWithdrawalHalving = await contract.methods.lastWithdrawalHalving().call();
+    } catch (error) {
+        console.error('Error fetching lastWithdrawalHalving:', error);
+        stats.lastWithdrawalHalving = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.owner = await contract.methods.owner().call();
+    } catch (error) {
+        console.error('Error fetching owner:', error);
+        stats.owner = '0x0000000000000000000000000000000000000000'; // Default to zero address
+    }
+    await sleep(50);
+
+    try {
+        stats.periodWithdrawalAmount = await contract.methods.periodWithdrawalAmount().call();
+    } catch (error) {
+        console.error('Error fetching periodWithdrawalAmount:', error);
+        stats.periodWithdrawalAmount = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.totalCumulativeTimelocked = await contract.methods.totalCumulativeTimelocked().call();
+    } catch (error) {
+        console.error('Error fetching totalCumulativeTimelocked:', error);
+        stats.totalCumulativeTimelocked = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.totalCurrentlyTimelocked = await contract.methods.totalCurrentlyTimelocked().call();
+    } catch (error) {
+        console.error('Error fetching totalCurrentlyTimelocked:', error);
+        stats.totalCurrentlyTimelocked = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.totalRewardsEarned = await contract.methods.totalRewardsEarned().call();
+    } catch (error) {
+        console.error('Error fetching totalRewardsEarned:', error);
+        stats.totalRewardsEarned = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.totalRewardsSeeded = await contract.methods.totalRewardsSeeded().call();
+    } catch (error) {
+        console.error('Error fetching totalRewardsSeeded:', error);
+        stats.totalRewardsSeeded = 0;
+    }
+    await sleep(50);
+
+    try {
+        stats.withdrawalHalvingEra = await contract.methods.withdrawalHalvingEra().call();
+    } catch (error) {
+        console.error('Error fetching withdrawalHalvingEra:', error);
+        stats.withdrawalHalvingEra = 0;
+    }
+
+    const sql = `
+        REPLACE INTO stats_contract2 (${Object.keys(stats).join(', ')})
+        VALUES (${Object.values(stats).map(value => `'${value}'`).join(', ')});
+    `;
+
+    connection.query(sql, (err) => {
+        if (err) {
+            console.error('Error inserting stats for contract2:', err);
+        } else {
+            console.log('Stats for contract2 inserted successfully.');
+        }
+    });
+}
+
+async function fetchStatsToken(connection, web3, config) {
+    const abi = JSON.parse(fs.readFileSync('./tokencontract.abi', 'utf-8'));
+    const contract = new web3.eth.Contract(abi, config.tokenContractAddress);
+
+    try {
+        const burnAddress = '0x0000000000000000000000000000000000000000'; // Burn address
+        const stats = {
+            id: 1, // Add an id field to ensure only one row exists
+            burnPercent: await contract.methods.burnPercent().call(),
+            name: await contract.methods.name().call(),
+            totalSupply: await contract.methods.totalSupply().call(),
+            decimals: await contract.methods.decimals().call(),
+            _totalSupply: await contract.methods._totalSupply().call(),
+            maxSupplyForEra: await contract.methods.maxSupplyForEra().call(),
+            tokensMinted: await contract.methods.tokensMinted().call(),
+            balanceOfBurntTokens: await contract.methods.balanceOf(burnAddress).call(),
+            owner: await contract.methods.owner().call(),
+            symbol: await contract.methods.symbol().call(),
+            newOwner: await contract.methods.newOwner().call()
+        };
+
+        for (let key of Object.keys(stats)) {
+            await sleep(50);
+        }
+
+        const sql = `
+            REPLACE INTO stats_token (${Object.keys(stats).join(', ')})
+            VALUES (${Object.values(stats).map(value => `'${value}'`).join(', ')});
+        `;
+
+        connection.query(sql, (err) => {
+            if (err) {
+                console.error('Error inserting stats for token:', err);
+            } else {
+                console.log('Stats for token inserted successfully.');
+            }
+        });
+    } catch (error) {
+        console.error('Unexpected error in fetchStatsToken:', error);
+    }
+}
+
+async function safeContractCall(method, methodName) {
+    try {
+        return await method().call();
+    } catch (error) {
+        if (error.message.includes("Tokens are unlocked and ready for withdrawal")) {
+            return 0; // Set value to 0 silently
+        } else {
+            console.error(`Unexpected error in safeContractCall (${methodName}):`, error);
+            return 0; // Return a default value to ensure script continues
+        }
+    }
+}
+
+async function fetchAndStoreStats(connection, web3, config) {
+    try {
+        await fetchStatsContract1(connection, web3, config);
+        await fetchStatsContract2(connection, web3, config);
+        await fetchStatsToken(connection, web3, config);
+    } catch (error) {
+        console.error('Error in fetchAndStoreStats:', error);
+    }
+}
+
+module.exports = {
+    createStatsTables,
+    fetchAndStoreStats,
+    clearStatsTables
+};
+
