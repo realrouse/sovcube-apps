@@ -28,7 +28,7 @@ function createStatsTables(connection) {
                 lastWithdrawalHalving BIGINT,
                 owner VARCHAR(42),
                 periodWithdrawalAmount BIGINT,
-                totalCumulativeTimelocked BIGINT,
+                totalCumulativeTimelockedByUsers BIGINT,
                 totalCurrentlyTimelocked BIGINT,
                 totalRewardsEarned BIGINT,
                 totalRewardsSeeded BIGINT,
@@ -191,10 +191,10 @@ async function fetchStatsContract2(connection, web3, config) {
     await sleep(50);
 
     try {
-        stats.totalCumulativeTimelocked = await contract.methods.totalCumulativeTimelocked().call();
+        stats.totalCumulativeTimelockedByUsers = await contract.methods.totalCumulativeTimelockedByUsers().call();
     } catch (error) {
-        console.error('Error fetching totalCumulativeTimelocked:', error);
-        stats.totalCumulativeTimelocked = 0;
+        console.error('Error fetching totalCumulativeTimelockedByUsers:', error);
+        stats.totalCumulativeTimelockedByUsers = 0;
     }
     await sleep(50);
 
